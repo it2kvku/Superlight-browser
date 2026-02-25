@@ -1,0 +1,19 @@
+[package]
+name = "brownser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wry = "0.54"
+tao = "0.33"
+
+[profile.release]
+# Optimize for size instead of speed
+opt-level = "z"
+# Enable link-time optimization (single codegen unit)
+lto = true
+codegen-units = 1
+# Strip debug symbols and metadata
+strip = "symbols"
+# Abort on panic (smaller than unwinding)
+panic = "abort"
