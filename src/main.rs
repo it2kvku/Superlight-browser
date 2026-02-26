@@ -2,12 +2,16 @@ mod adblocker;
 
 use adblocker::AdBlocker;
 use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+use std::path::PathBuf;
 use tao::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
 use wry::{WebViewBuilder, NewWindowResponse};
+
+#[cfg(windows)]
+use wry::WebViewBuilderExtWindows;
 
 const HOME_URL: &str = "https://www.google.com";
 
@@ -399,6 +403,28 @@ fn main() -> wry::Result<()> {
     let ad_blocker_nav = ad_blocker.clone();
     let blocked_count_nav = blocked_count.clone();
 
+    // Extensions directory — wry iterates subfolders inside this path
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    
+    // Look for extensions folder next to exe first, then in CWD
+    let extensions_dir = if exe_dir.join("extensions").join("brownser-adblocker").join("manifest.json").exists() {
+        exe_dir.join("extensions")
+    } else {
+        // Fallback: CWD (for development)
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        cwd.join("extensions")
+    };
+    eprintln!("[EXTENSION] Loading from: {:?}", extensions_dir);
+    // List what's inside
+    if let Ok(entries) = std::fs::read_dir(&extensions_dir) {
+        for entry in entries.flatten() {
+            eprintln!("[EXTENSION]   Found: {:?}", entry.path());
+        }
+    }
+
     let _webview = WebViewBuilder::new()
         // Start with home URL
         .with_url(HOME_URL)
@@ -439,6 +465,30 @@ fn main() -> wry::Result<()> {
                 eprintln!("[TITLE] {}", title);
             }
         })
+        // === Windows-specific: Memory optimization + Extension support ===
+        .with_additional_browser_args(
+            [
+                // Default wry flags (MUST re-add when using with_additional_browser_args)
+                // ALL --disable-features merged into ONE flag (last one wins in Chromium!)
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Prerender2",
+                // === Memory Optimization (safe flags only) ===
+                "--process-per-site",                 // Share process per site
+                "--disable-gpu-memory-buffer-compositor-resources", // Reduce GPU memory
+                "--js-flags=--max-old-space-size=256", // Limit V8 heap to 256MB (enough for extensions)
+                "--disable-background-networking",    // No background network requests
+                "--disable-client-side-phishing-detection", // Reduce memory
+                "--no-pings",                         // Don't send hyperlink auditing pings
+                // === Disable unnecessary features (but NOT extensions!) ===
+                "--disable-sync",                     // No sync service
+                "--disable-translate",                // No translation service
+                "--disable-default-apps",             // No default apps
+                "--disable-component-update",         // No component updates
+                "--disable-background-timer-throttling", // Let our JS run efficiently
+                "--no-proxy-server",                  // No proxy overhead
+            ].join(" ")
+        )
+        .with_browser_extensions_enabled(true)
+        .with_extensions_path(extensions_dir)
         .build(&window)?;
 
     event_loop.run(move |event, _, control_flow| {

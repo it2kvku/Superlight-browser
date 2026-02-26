@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Brownser Ad Blocker",
+  "version": "1.0.0",
+  "description": "Built-in ad blocker for Brownser — blocks ads including YouTube video ads",
+  "permissions": [
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "block_ads",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["youtube_blocker.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "icons": {}
+}
