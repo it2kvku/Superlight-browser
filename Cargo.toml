@@ -6,6 +6,11 @@ edition = "2021"
 [dependencies]
 wry = "0.54"
 tao = "0.33"
+zip = "2"
+
+[build-dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+walkdir = "2"
 
 [profile.release]
 # Optimize for size instead of speed

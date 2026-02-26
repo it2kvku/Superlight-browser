@@ -403,26 +403,51 @@ fn main() -> wry::Result<()> {
     let ad_blocker_nav = ad_blocker.clone();
     let blocked_count_nav = blocked_count.clone();
 
-    // Extensions directory — wry iterates subfolders inside this path
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    
-    // Look for extensions folder next to exe first, then in CWD
-    let extensions_dir = if exe_dir.join("extensions").join("brownser-adblocker").join("manifest.json").exists() {
-        exe_dir.join("extensions")
-    } else {
-        // Fallback: CWD (for development)
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        cwd.join("extensions")
+    // === EMBEDDED ASSETS: extensions are compiled into the exe ===
+    let app_dir = {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(appdata).join("Brownser")
     };
-    eprintln!("[EXTENSION] Loading from: {:?}", extensions_dir);
-    // List what's inside
-    if let Ok(entries) = std::fs::read_dir(&extensions_dir) {
-        for entry in entries.flatten() {
-            eprintln!("[EXTENSION]   Found: {:?}", entry.path());
+    let _ = std::fs::create_dir_all(&app_dir);
+
+    // Extract extensions from embedded zip to AppData
+    let extensions_dir = app_dir.join("extensions");
+    let version_file = extensions_dir.join(".version");
+    let current_version = env!("CARGO_PKG_VERSION");
+    let needs_extract = if version_file.exists() {
+        std::fs::read_to_string(&version_file).unwrap_or_default().trim() != current_version
+    } else {
+        true
+    };
+
+    if needs_extract {
+        static EMBEDDED_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/extensions.zip"));
+        eprintln!("[EMBED] Extracting extensions ({} bytes compressed)...", EMBEDDED_ZIP.len());
+        let cursor = std::io::Cursor::new(EMBEDDED_ZIP);
+        if let Ok(mut archive) = zip::ZipArchive::new(cursor) {
+            // Clean old extensions
+            let _ = std::fs::remove_dir_all(&extensions_dir);
+            let _ = std::fs::create_dir_all(&extensions_dir);
+            for i in 0..archive.len() {
+                if let Ok(mut file) = archive.by_index(i) {
+                    let out_path = app_dir.join(file.name());
+                    if file.is_dir() {
+                        let _ = std::fs::create_dir_all(&out_path);
+                    } else {
+                        if let Some(parent) = out_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        if let Ok(mut outfile) = std::fs::File::create(&out_path) {
+                            let _ = std::io::copy(&mut file, &mut outfile);
+                        }
+                    }
+                }
+            }
+            let _ = std::fs::write(&version_file, current_version);
+            eprintln!("[EMBED] Extensions extracted to {:?}", extensions_dir);
         }
+    } else {
+        eprintln!("[EMBED] Extensions up-to-date (v{})", current_version);
     }
 
     let _webview = WebViewBuilder::new()
