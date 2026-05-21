@@ -3,6 +3,7 @@ mod adblocker;
 use adblocker::AdBlocker;
 use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use tao::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -93,10 +94,38 @@ const NAV_BAR_JS: &str = r#"
                 box-shadow: 0 0 0 2px rgba(100,140,255,0.1) !important;
             }
             #brownser-nav .bn-shield {
+                display: flex !important;
+                align-items: center !important;
+                gap: 5px !important;
+                height: 30px !important;
+                padding: 0 9px !important;
+                background: rgba(74, 222, 128, 0.08) !important;
+                border: 1px solid rgba(74, 222, 128, 0.18) !important;
+                border-radius: 8px !important;
                 color: #4ade80 !important;
-                font-size: 13px !important;
-                padding: 0 4px !important;
+                font-size: 12px !important;
+                font-variant-numeric: tabular-nums !important;
                 white-space: nowrap !important;
+                user-select: none !important;
+                cursor: default !important;
+                transition: background 0.18s ease, transform 0.15s ease, border-color 0.18s ease !important;
+            }
+            #brownser-nav .bn-shield-icon {
+                font-size: 13px !important;
+                line-height: 1 !important;
+            }
+            #brownser-nav .bn-shield-count {
+                font-size: 11.5px !important;
+                font-weight: 600 !important;
+                color: #4ade80 !important;
+                min-width: 10px !important;
+                text-align: right !important;
+                letter-spacing: 0.2px !important;
+            }
+            #brownser-nav .bn-shield.bn-pop {
+                background: rgba(74, 222, 128, 0.22) !important;
+                border-color: rgba(74, 222, 128, 0.45) !important;
+                transform: scale(1.06) !important;
             }
         </style>
         <button class="bn-btn" id="bn-back" title="Back">&#8592;</button>
@@ -104,7 +133,10 @@ const NAV_BAR_JS: &str = r#"
         <button class="bn-btn" id="bn-reload" title="Reload">&#8635;</button>
         <button class="bn-btn" id="bn-home" title="Home">&#127968;</button>
         <input type="text" class="bn-url" id="bn-url" spellcheck="false" autocomplete="off">
-        <span class="bn-shield" id="bn-shield" title="Ads blocked">&#128737;</span>
+        <span class="bn-shield" id="bn-shield" title="Ads &amp; trackers blocked this session (network-level)">
+            <span class="bn-shield-icon">&#128737;</span>
+            <span class="bn-shield-count" id="bn-shield-count">0</span>
+        </span>
     `;
 
     function injectNav() {
@@ -143,6 +175,28 @@ const NAV_BAR_JS: &str = r#"
         document.getElementById('bn-home').addEventListener('click', () => {
             window.location.href = 'https://www.google.com';
         });
+
+        // === Live ad-block counter ===
+        // Rust pushes `window.__brownserBlockedCount` on a 250ms tick from the event loop.
+        const shield = document.getElementById('bn-shield');
+        const countEl = document.getElementById('bn-shield-count');
+        let lastShown = -1;
+        let popTimer = null;
+        function renderShield() {
+            const n = (typeof window.__brownserBlockedCount === 'number' && window.__brownserBlockedCount >= 0)
+                ? window.__brownserBlockedCount : 0;
+            if (n === lastShown) return;
+            const prev = lastShown;
+            lastShown = n;
+            countEl.textContent = n.toLocaleString();
+            if (prev >= 0 && n > prev) {
+                shield.classList.add('bn-pop');
+                if (popTimer) clearTimeout(popTimer);
+                popTimer = setTimeout(() => shield.classList.remove('bn-pop'), 200);
+            }
+        }
+        renderShield();
+        setInterval(renderShield, 400);
     }
 
     if (document.body) {
@@ -402,6 +456,7 @@ fn main() -> wry::Result<()> {
 
     let ad_blocker_nav = ad_blocker.clone();
     let blocked_count_nav = blocked_count.clone();
+    let blocked_count_tick = blocked_count.clone();
 
     // === EMBEDDED ASSETS: extensions are compiled into the exe ===
     let app_dir = {
@@ -450,7 +505,7 @@ fn main() -> wry::Result<()> {
         eprintln!("[EMBED] Extensions up-to-date (v{})", current_version);
     }
 
-    let _webview = WebViewBuilder::new()
+    let webview = WebViewBuilder::new()
         // Start with home URL
         .with_url(HOME_URL)
         // Disable devtools
@@ -516,15 +571,49 @@ fn main() -> wry::Result<()> {
         .with_extensions_path(extensions_dir)
         .build(&window)?;
 
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+    // Re-publish the blocked count to the page on a fixed cadence.
+    // Why always-push (vs. only-on-change): each navigation creates a fresh JS
+    // `window` so `__brownserBlockedCount` resets to `undefined`; pushing on a
+    // timer guarantees the badge reflects the running total within one tick of
+    // any new page load, with no chicken-and-egg between the navigation handler
+    // and the WebView handle.
+    const TICK: Duration = Duration::from_millis(250);
+    let mut last_push = Instant::now() - TICK; // force a push on the first iteration
+    let mut exiting = false;
 
-        match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => *control_flow = ControlFlow::Exit,
-            _ => {}
+    event_loop.run(move |event, _, control_flow| {
+        // Wake at least every TICK so the badge stays fresh even with no UI events.
+        if !exiting {
+            *control_flow = ControlFlow::WaitUntil(Instant::now() + TICK);
         }
+
+        if let Event::WindowEvent {
+            event: WindowEvent::CloseRequested,
+            ..
+        } = event
+        {
+            *control_flow = ControlFlow::Exit;
+            exiting = true;
+            return;
+        }
+
+        if exiting {
+            return;
+        }
+
+        // Throttle: tao fires several events per tick (NewEvents,
+        // MainEventsCleared, RedrawEventsCleared, ...); coalesce them into a
+        // single push per TICK.
+        let now = Instant::now();
+        if now.duration_since(last_push) < TICK {
+            return;
+        }
+        last_push = now;
+
+        let count = blocked_count_tick.load(Ordering::Relaxed);
+        let _ = webview.evaluate_script(&format!(
+            "window.__brownserBlockedCount = {};",
+            count
+        ));
     });
 }
