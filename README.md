@@ -12,6 +12,7 @@ Built on [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview
 |---|---|
 | 🪶 **Superlight** | ~0.6 MB exe, minimal RAM usage |
 | 🛡️ **Ad Blocker** | ~200+ blocked ad/tracker domains (EasyList-based) |
+| 🔢 **Live Block Counter** | Running tally of blocked requests shown in the nav bar shield |
 | 📺 **YouTube Ad Blocker** | Auto-skips video ads, hides banners & overlays |
 | 🔒 **Popup Blocker** | Blocks unwanted popup windows |
 | 💾 **Persistent Sessions** | Login stays after restart (cookies saved) |
